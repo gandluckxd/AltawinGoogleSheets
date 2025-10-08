@@ -1,7 +1,6 @@
 import gspread
 import logging
 from oauth2client.service_account import ServiceAccountCredentials
-from gspread_formatting import CellFormat, Color, TextFormat, format_cell_range
 from config import GOOGLE_SHEETS_CONFIG
 from datetime import date, datetime, timedelta
 
@@ -59,18 +58,10 @@ def update_google_sheet(data: list[dict]):
         # Если лист пуст, просто вставляем все данные с заголовком
         if not sheet_values:
             logging.info("Лист пуст. Вставляем все данные с заголовком.")
-            header.append('ИТОГО')
             rows_to_insert = [header]
             
-            izd_col_letter = chr(ord('A') + header.index('Изделия'))
-            razdv_col_letter = chr(ord('A') + header.index('Раздвижки'))
-            mosnet_col_letter = chr(ord('A') + header.index('Москитные сетки'))
-
             for i, row_dict in enumerate(processed_new_data):
-                row_num = i + 2
-                row_values = [row_dict.get(h, '') for h in header if h != 'ИТОГО']
-                formula = f"=СУММ({izd_col_letter}{row_num};{razdv_col_letter}{row_num};{mosnet_col_letter}{row_num})"
-                row_values.append(formula)
+                row_values = [row_dict.get(h, '') for h in header]
                 rows_to_insert.append(row_values)
             
             sheet.update('A1', rows_to_insert, value_input_option='USER_ENTERED')
@@ -85,19 +76,6 @@ def update_google_sheet(data: list[dict]):
             logging.error("На листе отсутствует столбец 'Дата'. Невозможно выполнить обновление.")
             return
 
-        # Готовим шаблон для формулы ИТОГО, если столбец существует
-        formula_template = None
-        total_col_idx = -1
-        if 'ИТОГО' in current_header:
-            try:
-                total_col_idx = current_header.index('ИТОГО')
-                izd_col_letter = chr(ord('A') + current_header.index('Изделия'))
-                razdv_col_letter = chr(ord('A') + current_header.index('Раздвижки'))
-                mosnet_col_letter = chr(ord('A') + current_header.index('Москитные сетки'))
-                formula_template = f"=СУММ({izd_col_letter}{{row_num}};{razdv_col_letter}{{row_num}};{mosnet_col_letter}{{row_num}})"
-            except ValueError:
-                logging.warning("Не удалось найти все столбцы ('Изделия', 'Раздвижки', 'Москитные сетки') для формулы 'ИТОГО'.")
-
         # Создаем карту существующих дат и их номеров строк (1-based index)
         date_to_row_map = {row[date_column_index]: i for i, row in enumerate(sheet_values[1:], start=2)}
 
@@ -110,19 +88,11 @@ def update_google_sheet(data: list[dict]):
                 continue
 
             # Собираем значения в том порядке, как они в заголовке на листе
-            row_values = []
-            for h in current_header:
-                if h == 'ИТОГО' and formula_template:
-                    row_values.append('')  # Заполнитель для формулы
-                else:
-                    row_values.append(row_dict.get(h, ''))
+            row_values = [row_dict.get(h, '') for h in current_header]
 
             if date_str in date_to_row_map:
                 row_number = date_to_row_map[date_str]
-                if formula_template:
-                    formula = formula_template.format(row_num=row_number)
-                    row_values[total_col_idx] = formula
-
+                
                 updates_batch.append({
                     'range': f'A{row_number}:{chr(ord("A")+len(current_header)-1)}{row_number}',
                     'values': [row_values]
@@ -138,14 +108,6 @@ def update_google_sheet(data: list[dict]):
             sheet.batch_update(updates_batch, value_input_option='USER_ENTERED')
 
         if new_rows_to_insert:
-            # Добавляем формулы в новые строки перед вставкой
-            if formula_template:
-                start_row = len(sheet_values) + 1
-                for i, row in enumerate(new_rows_to_insert):
-                    row_num = start_row + i
-                    formula = formula_template.format(row_num=row_num)
-                    row[total_col_idx] = formula
-
             # Сортируем новые строки по дате перед вставкой
             try:
                 new_rows_to_insert.sort(key=lambda r: datetime.strptime(r[date_column_index], '%d.%m.%Y'))
@@ -161,104 +123,112 @@ def update_google_sheet(data: list[dict]):
                 inherit_from_before=True
             )
             
-        # Обновляем фильтр после всех операций, управляя видимостью строк
+        # Отображаем только записи в окне: от 2 дней до сегодня и +5 дней
+        # Реализуем через скрытие строк вне окна, чтобы избежать конфликтов базового фильтра
         try:
-            logging.info("Обновление видимости строк (фильтрация)...")
-            all_values = sheet.get_all_values()
-            num_rows = len(all_values)
-            if num_rows <= 1:
-                logging.info("Недостаточно данных для фильтрации.")
-                return
+            logging.info("Применение окна отображения по дате (−2 до +5 дней)...")
 
-            sheet_header = all_values[0]
-            
-            # Находим индексы нужных столбцов
-            try:
-                date_col_idx = sheet_header.index('Дата')
-                izd_col_idx = sheet_header.index('Изделия')
-                razdv_col_idx = sheet_header.index('Раздвижки')
-                mosnet_col_idx = sheet_header.index('Москитные сетки')
-            except ValueError as e:
-                logging.error(f"Не найден необходимый столбец для фильтрации: {e}")
-                spreadsheet.batch_update({"requests": [{"clearBasicFilter": {"sheetId": sheet.id}}]}) # На всякий случай сбрасываем старый фильтр
-                return
-
-            # Определяем диапазон дат для фильтра
-            start_date_filter = date.today() - timedelta(days=2)
-            end_date_filter = date.today() + timedelta(days=5)
-
-            rows_to_hide = []
-            # Пропускаем заголовок (индекс 0), итерируемся по строкам данных
-            for i, row in enumerate(all_values[1:], start=1): # start=1, т.к. API использует 0-based, а мы пропускаем заголовок
-                
-                # Проверяем, что в строке есть данные
-                if len(row) <= max(date_col_idx, izd_col_idx, razdv_col_idx, mosnet_col_idx):
-                    rows_to_hide.append(i) # Скрываем пустые/некорректные строки
-                    continue
-
-                # --- Проверка по дате ---
-                is_in_date_range = False
+            # Перечитываем данные после всех изменений, чтобы получить актуальные строки
+            latest_values = sheet.get_all_values()
+            if not latest_values:
+                logging.info("Лист пуст после обновления — нечего фильтровать.")
+            else:
+                current_header = latest_values[0]
                 try:
-                    row_date = datetime.strptime(row[date_col_idx], '%d.%m.%Y').date()
-                    if start_date_filter <= row_date <= end_date_filter:
-                        is_in_date_range = True
-                except (ValueError, IndexError):
-                    pass # Если дата в неверном формате или отсутствует, считаем, что она не в диапазоне
+                    date_column_index = current_header.index('Дата')
+                except ValueError:
+                    logging.error("Столбец 'Дата' не найден — пропускаю применение окна отображения.")
+                    date_column_index = None
 
-                # --- Проверка по нулевым значениям ---
-                has_values = False
-                try:
-                    izd_val = int(row[izd_col_idx] or 0)
-                    razdv_val = int(row[razdv_col_idx] or 0)
-                    mosnet_val = int(row[mosnet_col_idx] or 0)
-                    if izd_val > 0 or razdv_val > 0 or mosnet_val > 0:
-                        has_values = True
-                except (ValueError, IndexError):
-                    pass
-                
-                # Строку нужно скрыть, если она НЕ удовлетворяет ОБОИМ условиям
-                if not (is_in_date_range and has_values):
-                    rows_to_hide.append(i)
+                if date_column_index is not None:
+                    # Границы окна
+                    today = date.today()
+                    start_date = today - timedelta(days=2)
+                    end_date = today + timedelta(days=5)
 
-            requests = [
-                # 1. Сначала удаляем старый базовый фильтр, если он есть
-                {"clearBasicFilter": {"sheetId": sheet.id}},
-                # 2. Показываем все строки данных (от второй строки до конца)
-                {
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": sheet.id,
-                            "dimension": "ROWS",
-                            "startIndex": 1, 
-                            "endIndex": num_rows
-                        },
-                        "properties": {"hiddenByUser": False},
-                        "fields": "hiddenByUser"
-                    }
-                }
-            ]
+                    # Собираем индексы строк (0-based в API; 1-я строка — заголовок) вне окна
+                    rows_outside_window_zero_based = []
+                    for row_1_based, row in enumerate(latest_values[1:], start=2):
+                        raw_date = row[date_column_index] if date_column_index < len(row) else ''
+                        try:
+                            row_date = datetime.strptime(raw_date, '%d.%m.%Y').date()
+                            in_window = (start_date <= row_date <= end_date)
+                        except Exception:
+                            # Если дата не парсится — скрываем
+                            in_window = False
 
-            # 3. Скрываем строки, которые не прошли фильтрацию
-            for row_idx in rows_to_hide:
-                requests.append({
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": sheet.id,
-                            "dimension": "ROWS",
-                            "startIndex": row_idx,
-                            "endIndex": row_idx + 1
-                        },
-                        "properties": {"hiddenByUser": True},
-                        "fields": "hiddenByUser"
-                    }
-                })
-            
-            if len(requests) > 1: # Отправляем запрос, только если есть что делать
-                spreadsheet.batch_update({"requests": requests})
-                logging.info(f"Фильтрация применена. Обработано строк: {num_rows - 1}. Скрыто: {len(rows_to_hide)}.")
+                        if not in_window:
+                            # Преобразуем в 0-based индекс строки для API
+                            rows_outside_window_zero_based.append(row_1_based - 1)
 
+                    # Сначала показываем все строки (снимаем скрытие)
+                    sheet_id = sheet.id if hasattr(sheet, 'id') else sheet._properties.get('sheetId')
+                    total_rows = len(latest_values)
+
+                    requests = []
+                    if total_rows > 1:
+                        requests.append({
+                            'updateDimensionProperties': {
+                                'range': {
+                                    'sheetId': sheet_id,
+                                    'dimension': 'ROWS',
+                                    'startIndex': 1,   # пропускаем заголовок
+                                    'endIndex': total_rows
+                                },
+                                'properties': {
+                                    'hiddenByUser': False
+                                },
+                                'fields': 'hiddenByUser'
+                            }
+                        })
+
+                    # Группируем внеоконные строки в непрерывные диапазоны для минимизации запросов
+                    def group_contiguous(indices: list[int]) -> list[tuple[int, int]]:
+                        if not indices:
+                            return []
+                        indices.sort()
+                        ranges = []
+                        start = prev = indices[0]
+                        for idx in indices[1:]:
+                            if idx == prev + 1:
+                                prev = idx
+                                continue
+                            ranges.append((start, prev + 1))  # end exclusive
+                            start = prev = idx
+                        ranges.append((start, prev + 1))
+                        return ranges
+
+                    hide_ranges_zero_based = group_contiguous(rows_outside_window_zero_based)
+                    for start_idx, end_idx in hide_ranges_zero_based:
+                        # Не скрываем заголовок; start_idx >= 1 гарантированно
+                        if start_idx < 1:
+                            start_idx = 1
+                        if start_idx >= end_idx:
+                            continue
+                        requests.append({
+                            'updateDimensionProperties': {
+                                'range': {
+                                    'sheetId': sheet_id,
+                                    'dimension': 'ROWS',
+                                    'startIndex': start_idx,
+                                    'endIndex': end_idx
+                                },
+                                'properties': {
+                                    'hiddenByUser': True
+                                },
+                                'fields': 'hiddenByUser'
+                            }
+                        })
+
+                    if requests:
+                        spreadsheet.batch_update({'requests': requests})
+                        logging.info(
+                            "Окно отображения применено: показаны даты от %s до %s, скрыто диапазонов: %d",
+                            start_date.strftime('%d.%m.%Y'), end_date.strftime('%d.%m.%Y'),
+                            max(0, len(requests) - 1)
+                        )
         except Exception as e:
-            logging.error(f"Произошла комплексная ошибка при обновлении видимости строк: {e}")
+            logging.error(f"Произошла ошибка при применении окна отображения: {e}")
 
         try:
             logging.info("Обновление времени последнего обновления в ячейке F1...")
@@ -267,6 +237,81 @@ def update_google_sheet(data: list[dict]):
             logging.info("Время последнего обновления успешно записано в F1.")
         except Exception as e:
             logging.error(f"Не удалось обновить ячейку F1: {e}")
+
+        # Применяем форматирование: шрифт 14 жирный для всей таблицы
+        try:
+            logging.info("Применение форматирования шрифта (14, жирный)...")
+            sheet_id = sheet.id if hasattr(sheet, 'id') else sheet._properties.get('sheetId')
+            
+            # Перечитываем данные для получения актуального количества строк
+            latest_values = sheet.get_all_values()
+            total_rows = len(latest_values)
+            
+            format_requests = []
+            
+            # Применяем шрифт 14 и жирный ко всей таблице
+            if total_rows > 0:
+                format_requests.append({
+                    'repeatCell': {
+                        'range': {
+                            'sheetId': sheet_id,
+                            'startRowIndex': 0,
+                            'endRowIndex': total_rows
+                        },
+                        'cell': {
+                            'userEnteredFormat': {
+                                'textFormat': {
+                                    'fontSize': 14,
+                                    'bold': True
+                                }
+                            }
+                        },
+                        'fields': 'userEnteredFormat.textFormat.fontSize,userEnteredFormat.textFormat.bold'
+                    }
+                })
+            
+            # Находим строку с текущей датой и выделяем её светло-зеленым
+            today_str = date.today().strftime('%d.%m.%Y')
+            current_header = latest_values[0] if latest_values else []
+            
+            try:
+                date_column_index = current_header.index('Дата')
+                for row_idx, row in enumerate(latest_values[1:], start=1):
+                    if row[date_column_index] == today_str:
+                        # Выделяем строку светло-зеленым цветом
+                        format_requests.append({
+                            'repeatCell': {
+                                'range': {
+                                    'sheetId': sheet_id,
+                                    'startRowIndex': row_idx,
+                                    'endRowIndex': row_idx + 1
+                                },
+                                'cell': {
+                                    'userEnteredFormat': {
+                                        'backgroundColor': {
+                                            'red': 0.85,
+                                            'green': 0.92,
+                                            'blue': 0.83
+                                        },
+                                        'textFormat': {
+                                            'fontSize': 14,
+                                            'bold': True
+                                        }
+                                    }
+                                },
+                                'fields': 'userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.fontSize,userEnteredFormat.textFormat.bold'
+                            }
+                        })
+                        logging.info(f"Найдена и выделена строка с текущей датой: {today_str} (строка {row_idx + 1})")
+                        break
+            except ValueError:
+                logging.warning("Столбец 'Дата' не найден для выделения текущего дня.")
+            
+            if format_requests:
+                spreadsheet.batch_update({'requests': format_requests})
+                logging.info("Форматирование успешно применено.")
+        except Exception as e:
+            logging.error(f"Ошибка при применении форматирования: {e}")
 
         logging.info("Обновление данных в Google Sheets завершено.")
 

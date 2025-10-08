@@ -53,7 +53,7 @@ def job():
     else:
         logging.warning("Пропускаем обновление Google Sheets, так как данные из БД не были получены.")
         
-    logging.info("Задача завершена. Следующий запуск завтра.")
+    logging.info("Задача завершена. Следующий запуск через 5 минут.")
 
 
 if __name__ == "__main__":
@@ -62,8 +62,8 @@ if __name__ == "__main__":
     # Запускаем задачу сразу при старте
     job()
     
-    # Настраиваем расписание - каждый день в 01:00
-    schedule.every().day.at("01:00").do(job)
+    # Настраиваем расписание - каждые 5 минут
+    schedule.every(5).minutes.do(job)
     
     while True:
         schedule.run_pending()
