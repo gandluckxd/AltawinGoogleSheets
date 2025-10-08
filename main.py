@@ -1,7 +1,7 @@
 import schedule
 import time
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from database import get_data_from_db
 from google_sheets import update_google_sheet
 
@@ -13,17 +13,43 @@ def job():
     """
     logging.info("Запуск задачи по обновлению данных...")
     
-    # Определяем период - за последнюю неделю и на неделю вперед
+    # Определяем период - за последние 14 дней и на 10 дней вперед
     today = date.today()
-    start_date = today - timedelta(days=7)
-    end_date = today + timedelta(days=7)
+    start_date = today - timedelta(days=14)
+    end_date = today + timedelta(days=14)
     
     # 1. Получаем данные из Firebird
-    data = get_data_from_db(start_date, end_date)
+    db_data = get_data_from_db(start_date, end_date)
     
-    # 2. Если данные успешно получены, обновляем Google Sheet
-    if data is not None:
-        update_google_sheet(data)
+    # 2. Если данные успешно получены, обрабатываем их и обновляем Google Sheet
+    if db_data is not None:
+        # Создаем полный список дат за период
+        all_dates = [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
+        
+        # Преобразуем данные из БД в словарь для быстрого доступа по дате,
+        # нормализуя ключ к типу date.
+        db_data_map = {}
+        for row in db_data:
+            db_date = row['PRODDATE']
+            # Firebird может возвращать datetime, а мы сравниваем с date
+            if isinstance(db_date, datetime):
+                db_date = db_date.date()
+            db_data_map[db_date] = row
+        
+        full_data = []
+        for dt in all_dates:
+            if dt in db_data_map:
+                full_data.append(db_data_map[dt])
+            else:
+                # Если данных за эту дату нет, добавляем строку с нулями
+                full_data.append({
+                    'PRODDATE': dt,
+                    'QTY_IZD_PVH': 0,
+                    'QTY_RAZDV': 0,
+                    'QTY_MOSNET': 0
+                })
+        
+        update_google_sheet(full_data)
     else:
         logging.warning("Пропускаем обновление Google Sheets, так как данные из БД не были получены.")
         
