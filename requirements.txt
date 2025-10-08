@@ -1,0 +1,7 @@
+fdb
+gspread
+oauth2client
+schedule
+python-dotenv
+fdb
+gspread-formatting
