@@ -1,13 +1,14 @@
 import fdb
 import logging
-from config import DB_CONFIG, SQL_QUERY
-from datetime import date
+from config import DB_CONFIG, SQL_QUERIES
+from datetime import date, datetime
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def get_data_from_db(start_date: date, end_date: date) -> list[dict] | None:
     """
-    Подключается к базе данных Firebird, выполняет запрос и возвращает данные.
+    Подключается к базе данных Firebird, выполняет 5 отдельных запросов,
+    объединяет результаты и возвращает их.
 
     Args:
         start_date: Начальная дата для выборки.
@@ -20,25 +21,34 @@ def get_data_from_db(start_date: date, end_date: date) -> list[dict] | None:
         logging.info("Подключение к базе данных Firebird...")
         con = fdb.connect(**DB_CONFIG)
         cur = con.cursor()
-        logging.info("Выполнение SQL-запроса...")
         
-        # Преобразуем даты в строки в формате, который ожидает Firebird
         date1_str = start_date.strftime('%Y-%m-%d')
         date2_str = end_date.strftime('%Y-%m-%d')
         
-        # Firebird fdb драйвер использует '?' как плейсхолдер
-        cur.execute(SQL_QUERY, (date1_str, date2_str, date1_str, date2_str, date1_str, date2_str))
+        all_data = {}
+
+        for key, query in SQL_QUERIES.items():
+            logging.info(f"Выполнение SQL-запроса для: {key}...")
+            cur.execute(query, (date1_str, date2_str))
+            
+            columns = [desc[0] for desc in cur.description]
+            
+            for row in cur.fetchall():
+                row_dict = dict(zip(columns, row))
+                proddate = row_dict.pop('PRODDATE')
+                
+                if isinstance(proddate, datetime):
+                    proddate = proddate.date()
+
+                if proddate not in all_data:
+                    all_data[proddate] = {'PRODDATE': proddate}
+                
+                all_data[proddate].update(row_dict)
+
+        logging.info(f"Получено и объединено данных по {len(all_data)} датам.")
         
-        # Получаем названия столбцов
-        columns = [desc[0] for desc in cur.description]
-        
-        # Формируем результат в виде списка словарей
-        data = []
-        data = [dict(zip(columns, row)) for row in cur.fetchall()]
-        
-        logging.info(f"Получено {len(data)} строк из базы данных.")
-        
-        return data
+        # Преобразуем словарь в список, который ожидает остальная часть приложения
+        return list(all_data.values())
 
     except fdb.Error as e:
         logging.error(f"Ошибка при работе с базой данных Firebird: {e}")

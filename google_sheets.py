@@ -38,13 +38,13 @@ def update_google_sheet(data: list[dict]):
             sheet_values = []
 
         # 1. Подготавливаем новые данные
-        header = ['Дата', 'Изделия', 'Раздвижки', 'Москитные сетки']
+        header = ['Дата', 'Изделия', 'Раздвижки', 'МС', 'СП и стекла', 'Сэндвичи', 'Подоконники', 'Железо']
         processed_new_data = []
         for row in data:
             processed_row = {}
             for key, value in row.items():
                 # Приводим ключи БД к названиям столбцов в таблице
-                new_key = {'PRODDATE': 'Дата', 'QTY_IZD_PVH': 'Изделия', 'QTY_RAZDV': 'Раздвижки', 'QTY_MOSNET': 'Москитные сетки'}.get(key, key)
+                new_key = {'PRODDATE': 'Дата', 'QTY_IZD_PVH': 'Изделия', 'QTY_RAZDV': 'Раздвижки', 'QTY_MOSNET': 'МС', 'QTY_GLASS_PACKS': 'СП и стекла', 'QTY_SANDWICHES': 'Сэндвичи', 'QTY_WINDOWSILLS': 'Подоконники', 'QTY_IRON': 'Железо'}.get(key, key)
                 if isinstance(value, (date, datetime)):
                     processed_row[new_key] = value.strftime('%d.%m.%Y')
                 else:
@@ -58,26 +58,30 @@ def update_google_sheet(data: list[dict]):
         # Если лист пуст, просто вставляем все данные с заголовком
         if not sheet_values:
             logging.info("Лист пуст. Вставляем все данные с заголовком.")
+            
+            now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+            sheet.update('F1', [[f"Последнее обновление: {now}"]], value_input_option='USER_ENTERED')
+            
             rows_to_insert = [header]
             
             for i, row_dict in enumerate(processed_new_data):
                 row_values = [row_dict.get(h, '') for h in header]
                 rows_to_insert.append(row_values)
             
-            sheet.update('A1', rows_to_insert, value_input_option='USER_ENTERED')
+            sheet.update('A2', rows_to_insert, value_input_option='USER_ENTERED')
             logging.info("Данные успешно загружены.")
             return
 
         # Если лист не пуст, выполняем обновление/добавление
-        current_header = sheet_values[0]
+        current_header = [str(h).strip() for h in sheet_values[1]] if len(sheet_values) > 1 else []
         try:
             date_column_index = current_header.index('Дата')
         except ValueError:
-            logging.error("На листе отсутствует столбец 'Дата'. Невозможно выполнить обновление.")
+            logging.error("На листе в строке 2 отсутствует столбец 'Дата'. Невозможно выполнить обновление.")
             return
 
         # Создаем карту существующих дат и их номеров строк (1-based index)
-        date_to_row_map = {row[date_column_index]: i for i, row in enumerate(sheet_values[1:], start=2)}
+        date_to_row_map = {row[date_column_index]: i for i, row in enumerate(sheet_values[2:], start=3)}
 
         updates_batch = []
         new_rows_to_insert = []
@@ -133,7 +137,7 @@ def update_google_sheet(data: list[dict]):
             if not latest_values:
                 logging.info("Лист пуст после обновления — нечего фильтровать.")
             else:
-                current_header = latest_values[0]
+                current_header = [str(h).strip() for h in latest_values[1]] if len(latest_values) > 1 else []
                 try:
                     date_column_index = current_header.index('Дата')
                 except ValueError:
@@ -148,7 +152,7 @@ def update_google_sheet(data: list[dict]):
 
                     # Собираем индексы строк (0-based в API; 1-я строка — заголовок) вне окна
                     rows_outside_window_zero_based = []
-                    for row_1_based, row in enumerate(latest_values[1:], start=2):
+                    for row_1_based, row in enumerate(latest_values[2:], start=3):
                         raw_date = row[date_column_index] if date_column_index < len(row) else ''
                         try:
                             row_date = datetime.strptime(raw_date, '%d.%m.%Y').date()
@@ -172,7 +176,7 @@ def update_google_sheet(data: list[dict]):
                                 'range': {
                                     'sheetId': sheet_id,
                                     'dimension': 'ROWS',
-                                    'startIndex': 1,   # пропускаем заголовок
+                                    'startIndex': 2,   # пропускаем заголовок и инфо
                                     'endIndex': total_rows
                                 },
                                 'properties': {
@@ -200,9 +204,7 @@ def update_google_sheet(data: list[dict]):
 
                     hide_ranges_zero_based = group_contiguous(rows_outside_window_zero_based)
                     for start_idx, end_idx in hide_ranges_zero_based:
-                        # Не скрываем заголовок; start_idx >= 1 гарантированно
-                        if start_idx < 1:
-                            start_idx = 1
+                        # Не скрываем заголовок; start_idx >= 2 гарантированно
                         if start_idx >= end_idx:
                             continue
                         requests.append({
@@ -225,7 +227,7 @@ def update_google_sheet(data: list[dict]):
                         logging.info(
                             "Окно отображения применено: показаны даты от %s до %s, скрыто диапазонов: %d",
                             start_date.strftime('%d.%m.%Y'), end_date.strftime('%d.%m.%Y'),
-                            max(0, len(requests) - 1)
+                            max(0, len(requests) - 1) if total_rows > 1 else 0
                         )
         except Exception as e:
             logging.error(f"Произошла ошибка при применении окна отображения: {e}")
@@ -255,7 +257,7 @@ def update_google_sheet(data: list[dict]):
                     'repeatCell': {
                         'range': {
                             'sheetId': sheet_id,
-                            'startRowIndex': 0,
+                            'startRowIndex': 1,
                             'endRowIndex': total_rows
                         },
                         'cell': {
@@ -270,21 +272,52 @@ def update_google_sheet(data: list[dict]):
                     }
                 })
             
-            # Находим строку с текущей датой и выделяем её светло-зеленым
+            # Сначала убираем зеленое выделение со всех строк (кроме заголовка)
+            # Сбрасываем фон на белый для всех строк с данными (первые 4 столбца)
+            if total_rows > 2:
+                format_requests.append({
+                    'repeatCell': {
+                        'range': {
+                            'sheetId': sheet_id,
+                            'startRowIndex': 2,  # С третьей строки 
+                            'endRowIndex': total_rows,
+                            'startColumnIndex': 0,  # Столбец A
+                            'endColumnIndex': 8      # До столбца H включительно
+                        },
+                        'cell': {
+                            'userEnteredFormat': {
+                                'backgroundColor': {
+                                    'red': 1.0,
+                                    'green': 1.0,
+                                    'blue': 1.0
+                                },
+                                'textFormat': {
+                                    'fontSize': 14,
+                                    'bold': True
+                                }
+                            }
+                        },
+                        'fields': 'userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.fontSize,userEnteredFormat.textFormat.bold'
+                    }
+                })
+            
+            # Находим строку с текущей датой и выделяем только первые 6 ячеек светло-зеленым
             today_str = date.today().strftime('%d.%m.%Y')
-            current_header = latest_values[0] if latest_values else []
+            current_header = [str(h).strip() for h in latest_values[1]] if len(latest_values) > 1 else []
             
             try:
                 date_column_index = current_header.index('Дата')
-                for row_idx, row in enumerate(latest_values[1:], start=1):
+                for row_idx, row in enumerate(latest_values[2:], start=2):
                     if row[date_column_index] == today_str:
-                        # Выделяем строку светло-зеленым цветом
+                        # Выделяем только первые 6 ячейки строки светло-зеленым цветом
                         format_requests.append({
                             'repeatCell': {
                                 'range': {
                                     'sheetId': sheet_id,
                                     'startRowIndex': row_idx,
-                                    'endRowIndex': row_idx + 1
+                                    'endRowIndex': row_idx + 1,
+                                    'startColumnIndex': 0,  # Столбец A
+                                    'endColumnIndex': 8      # До столбца H включительно
                                 },
                                 'cell': {
                                     'userEnteredFormat': {
@@ -302,9 +335,9 @@ def update_google_sheet(data: list[dict]):
                                 'fields': 'userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.fontSize,userEnteredFormat.textFormat.bold'
                             }
                         })
-                        logging.info(f"Найдена и выделена строка с текущей датой: {today_str} (строка {row_idx + 1})")
+                        logging.info(f"Найдена и выделена строка с текущей датой: {today_str} (строка {row_idx + 1}, столбцы A-H)")
                         break
-            except ValueError:
+            except (ValueError, IndexError):
                 logging.warning("Столбец 'Дата' не найден для выделения текущего дня.")
             
             if format_requests:

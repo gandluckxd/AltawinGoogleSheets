@@ -39,14 +39,28 @@ def job():
         full_data = []
         for dt in all_dates:
             if dt in db_data_map:
-                full_data.append(db_data_map[dt])
+                row = db_data_map[dt]
+                full_data.append({
+                    'PRODDATE': row.get('PRODDATE', dt),
+                    'QTY_IZD_PVH': row.get('QTY_IZD_PVH', 0),
+                    'QTY_RAZDV': row.get('QTY_RAZDV', 0),
+                    'QTY_MOSNET': row.get('QTY_MOSNET', 0),
+                    'QTY_GLASS_PACKS': row.get('QTY_GLASS_PACKS', 0),
+                    'QTY_SANDWICHES': row.get('QTY_SANDWICHES', 0),
+                    'QTY_WINDOWSILLS': row.get('QTY_WINDOWSILLS', 0),
+                    'QTY_IRON': row.get('QTY_IRON', 0)
+                })
             else:
                 # Если данных за эту дату нет, добавляем строку с нулями
                 full_data.append({
                     'PRODDATE': dt,
                     'QTY_IZD_PVH': 0,
                     'QTY_RAZDV': 0,
-                    'QTY_MOSNET': 0
+                    'QTY_MOSNET': 0,
+                    'QTY_GLASS_PACKS': 0,
+                    'QTY_SANDWICHES': 0,
+                    'QTY_WINDOWSILLS': 0,
+                    'QTY_IRON': 0
                 })
         
         update_google_sheet(full_data)
